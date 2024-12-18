@@ -52,7 +52,6 @@ function docker-php_setup() {
     docker run \
       --network "${NETWORK}" \
       --name "${WEBSERVER}" \
-      -e MOODLE_WWWROOT="http://$ip_address"
       --detach \
       --env-file "${ENVIROPATH}" \
       -v "${COMPOSERCACHE}:/var/www/.composer:rw" \
@@ -61,8 +60,6 @@ function docker-php_setup() {
 
     # Ensure that the whole .composer directory is writable to all (www-data needs to write there).
     docker exec "${WEBSERVER}" chmod -R go+rw /var/www/.composer
-
-
 
     echo
     echo "Webserver logs:"

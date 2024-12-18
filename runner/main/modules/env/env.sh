@@ -51,6 +51,9 @@ function env_setup() {
     # Always make BUILD_NUMBER available, some old scripts use it.
     echo "BUILD_NUMBER=${BUILD_NUMBER}" >> "${ENVIROPATH}"
 
+    # Always add the job type.
+    echo "JOBTYPE=${JOBTYPE}" >> "${ENVIROPATH}"
+
     # Add all the variables that the job type requires.
     for var in $(get_job_to_env_file "${JOBTYPE}"); do
         # Docker does not support multiline env variables via --env-file, so we need to

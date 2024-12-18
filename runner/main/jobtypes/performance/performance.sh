@@ -30,7 +30,9 @@ function performance_to_env_file() {
         DBREPLICAS
         DBHOST_DBREPLICA
         WEBSERVER
-        MOODLE_CONFIG
+        MOODLE_WWWROOT
+        SITESIZE
+        TARGET_FILE
     )
     echo "${env[@]}"
 }
@@ -44,6 +46,8 @@ function performance_to_summary() {
     echo "== DBREPLICAS: ${DBREPLICAS}"
     echo "== MOODLE_CONFIG: ${MOODLE_CONFIG}"
     echo "== PLUGINSTOINSTALL: ${PLUGINSTOINSTALL}"
+    echo "== SITESIZE: ${SITESIZE}"
+    echo "== TARGET_FILE: ${TARGET_FILE}"
 }
 
 # This job type defines the following env variables
@@ -87,9 +91,11 @@ function performance_check() {
 
 # Performance job type init.
 function performance_config() {
-
     EXITCODE=0
 
+    export MOODLE_WWWROOT="http://${WEBSERVER}"
+    export SITESIZE="${SITESIZE:-S}"
+    export COURSENAME="performance_course"
 }
 
 # Performance job type setup.
@@ -103,10 +109,6 @@ function performance_setup() {
 
 # Performance job type setup for normal mode.
 function performance_setup_normal() {
-
-    # Create an empty timing file.
-    touch "${SHAREDDIR}"/timing.json
-
     # Init the Performance site.
     echo
     echo ">>> startsection Initialising Performance environment at $(date)<<<"
@@ -115,6 +117,11 @@ function performance_setup_normal() {
     performance_initcmd initcmd # By nameref.
     echo "Running: ${initcmd[*]}"
     docker exec -t -u www-data "${WEBSERVER}" "${initcmd[@]}"
+
+    # Copy the site normalisation script and execute it.
+    echo "Copying and executing the site normalisation script"
+    docker cp "${BASEDIR}/jobtypes/performance/normalise_site.php" "${WEBSERVER}:/var/www/html/normalise_site.php"
+    docker exec -t -u www-data "${WEBSERVER}" php /var/www/html/normalise_site.php
 
     echo "Creating test data"
     performance_generate_test_data
@@ -132,78 +139,56 @@ function performance_initcmd() {
 
     # Build the complete init command.
     cmd=(
-        php admin/cli/install_database.php --agree-license --fullname="Moodle Performance Test" --shortname="moodle" --adminuser=admin --adminpass=adminpass --
+        php admin/cli/install_database.php \
+            --agree-license \
+            --fullname="Moodle Performance Test"\
+            --shortname="moodle" \
+            --adminuser=admin \
+            --adminpass=adminpass
     )
 }
 
 function performance_generate_test_data() {
     local phpcmd="php"
 
-    # Generate courses.
-    docker exec -t -u www-data "${WEBSERVER}" ${phpcmd} admin/tool/generator/cli/maketestsite.php \
-        --size="XS" \
-        --fixeddataset \
-        --bypasscheck \
-        --filesizelimit="1000"
-    echo "NETWORK: ${NETWORK}"
+    # Generate Test Site.
+    local testsitecmd
+    perfomance_testsite_generator_command testsitecmd # By nameref.
+    echo "Running: ${testsitecmd[*]}"
+    docker exec -t -u www-data "${WEBSERVER}" "${testsitecmd[@]}"
 
-    # Variables
-#    WEBSERVER="your_webserver_container"
-#    phpcmd="php"
-#    SHAREDDIR="/path/to/shared/dir"  # Replace with actual shared directory
-    SIZE="XS"
-    SHORTNAME="testcourse_3"
+    # Generate the test plan files and capture the output
+    local testplancmd
+    performance_testplan_generator_command testplancmd # By nameref.
+    echo "Running: docker exec -t -u www-data "${WEBSERVER}" "${testplancmd[@]}""
+    testplanfiles=$(docker exec -t -u www-data "${WEBSERVER}" "${testplancmd[@]}")
 
-# Generate the test plan files and capture the output
-testplanfiles=$(docker exec -t -u www-data "${WEBSERVER}" ${phpcmd} admin/tool/generator/cli/maketestplan.php \
-    --size='XS' \
-    --shortname='testcourse_3' \
-    --bypasscheck)
+    # Display the captured output
+    echo "Captured Output:"
+    echo "${testplanfiles}"
+    echo "${SHAREDDIR}"
 
-# Display the captured output
-echo "Captured Output:"
-echo "${testplanfiles}"
+    # Ensure the directory exists and is writable
+    mkdir -p "${SHAREDDIR}/planfiles"
+    mkdir -p "${SHAREDDIR}/output/logs"
+    mkdir -p "${SHAREDDIR}/output/runs"
 
-# Extract URLs and download files to ${SHAREDDIR}
-urls=$(echo "${testplanfiles}" | grep -oP 'http://[^ ]+')
-for url in ${urls}; do
-    # Extract the filename from the URL
-    filename=$(basename "${url}")
-    echo "Downloading: ${url} to ${SHAREDDIR}/${filename}"
-    curl -o "${SHAREDDIR}/${filename}" "${url}"
-done
+    chmod -R 2777 "${SHAREDDIR}"
 
-echo "All files downloaded to ${SHAREDDIR}."
-    # Uncomment and handle the test plan files if needed.
-    # local testplanfiles="$(${testplancommand})"
-    # if [[ "$testplanfiles" == *"testplan"* ]]; then
-    #     local files=( $testplanfiles )
-    #     if [ "${#files[*]}" -ne 2 ]; then
-    #         echo "Error: There was a problem generating the test plan." >&2
-    #         exit 1
-    #     fi
-    #     ${curlcmd} \
-    #         -o $FILE_NAME_TEST_PLAN ${files[0]} \
-    #         -o $FILE_NAME_USERS ${files[1]} \
-    #         --silent || \
-    #         throw_error "There was a problem getting the test plan files. Check your wwwroot setting."
-    # else
-    #     echo "Error: There was a problem generating the test plan." >&2
-    #     exit 1
-    # fi
+    # Extract URLs and download files to ${SHAREDDIR}
+    urls=$(echo "${testplanfiles}" | grep -oP 'http://[^ ]+')
+    for url in ${urls}; do
+        # Trim any whitespace or newline characters from the URL
+        url=$(echo "${url}" | tr -d '\r\n')
+        # Extract the filename from the URL
+        filename=$(basename "${url}")
+        echo "Downloading: ${url} to ${SHAREDDIR}/${filename}"
+        docker exec -t -u www-data "${WEBSERVER}" curl -o "/shared/planfiles/${filename}" "${url}"
+    done
 }
-
-#function performance_datacmd() {
-#
-#}
 
 # Performance job type run.
 function performance_run() {
-    performance_run_normal
-}
-
-# PHPUnit job tye run for normal mode.
-function performance_run_normal() {    # Run the job type.
     echo
     if [[ RUNCOUNT -gt 1 ]]; then
         echo ">>> startsection Starting ${RUNCOUNT} Performance main runs at $(date) <<<"
@@ -212,38 +197,63 @@ function performance_run_normal() {    # Run the job type.
     fi
     echo "============================================================================"
 
+    datestring=`date '+%Y%m%d%H%M'`
+    # Get the plan file name.
+    testplanfile=`ls "${SHAREDDIR}"/planfiles/*.jmx | head -1 | sed "s@${SHAREDDIR}@/shared@"`
+    testusersfile=`ls "${SHAREDDIR}"/planfiles/*.csv | head -1 | sed "s@${SHAREDDIR}@/shared@"`
+    group="${MOODLE_BRANCH}"
+    description="${GIT_COMMIT}"
+    siteversion=""
+    sitebranch="${MOODLE_BRANCH}"
+    sitecommit="${GIT_COMMIT}"
+    runoutput="${SHAREDDIR}/output/logs/run.log"
+
     # Calculate the command to run. The function will return the command in the passed array.
-    local cmd=
-    performance_main_command cmd
+    local jmeterruncmd=
+    performance_main_command jmeterruncmd # By nameref.
 
-    echo "Running: ${cmd[*]}"
+    echo "Running: ${jmeterruncmd[*]}"
+    echo ">>> Performance run at $(date) <<<"
+    local dockerrunargs=
+    docker-jmeter_run_args dockerrunargs # By nameref
 
-    # Run the command "RUNCOUNT" times.
-    local iter=1
-    while [[ ${iter} -le ${RUNCOUNT} ]]; do
-        echo
-        echo ">>> Performance run ${iter} at $(date) <<<"
-        docker exec -t -u www-data "${WEBSERVER}" "${cmd[@]}"
-        EXITCODE=$((EXITCODE + $?))
-        iter=$((iter+1))
+    echo "${dockerrunargs[@]}"
+    echo docker run ${dockerrunargs[@]} ${jmeterruncmd[@]}
+    docker run "${dockerrunargs[@]}" ${jmeterruncmd[@]} | tee "${runoutput}"
+    EXITCODE=$?
+
+    # Grep the logs looking for errors and warnings.
+    for errorkey in ERROR WARN; do
+      # Also checking that the errorkey is the log entry type.
+      if grep $errorkey "${SHAREDDIR}/output/logs/jmeter.log" | awk '{print $3}' | grep -q $errorkey ; then
+        echo "Error: \"$errorkey\" found in jmeter logs, read log file to see the full trace."
+        # EXITCODE=1
+      fi
     done
 
     echo "============================================================================"
     echo "== Date: $(date)"
-    echo "== Main run exit code: ${EXITCODE}"
+    echo "== Exit code: ${EXITCODE}"
     echo "============================================================================"
     echo ">>> stopsection <<<"
-
-    # If the main run passed, we are done.
-    if [[ "${EXITCODE}" -eq 0 ]]; then
-        return
-    fi
 }
 
 # Performance job type teardown.
 function performance_teardown() {
-    # Need to copy the updated timing file back to the workspace.
-    cp "${SHAREDDIR}"/timing.json "${timingpath}"
+    DATADIR="${SHAREDDIR}/output/runs"
+    cp "${BASEDIR}/jobtypes/performance/format_rundata.php" "${DATADIR}/format_rundata.php"
+    docker run \
+        -v "${DATADIR}:/shared" \
+        -w /shared \
+        php:8.3-cli \
+        php /shared/format_rundata.php rundata.php
+
+    echo "Storing data with a git commit of '${GIT_COMMIT}'"
+
+    # We use the storage directory to store data for long term comparison.
+    TARGETDIR=`dirname "${TARGET_FILE}"`
+    mkdir -p "${WORKSPACE}/${TARGETDIR}"
+    cp -rf "${DATADIR}/rundata.json" "${TARGET_FILE}"
 }
 
 # Calculate the command to run for Performance main execution,
@@ -253,13 +263,74 @@ function performance_teardown() {
 function performance_main_command() {
     local -n _cmd=$1 # Return by nameref.
 
-    # Let's build the complete perf command for the 1st (parallel) run.
-    _cmd=(
-        php admin/tool/perf/cli/run.php
-    )
+    # Include logs string.
+    includelogs=1
+    includelogsstr="-Jincludelogs=$includelogs"
+    samplerinitstr="-Jbeanshell.listener.init=recorderfunctions.bsf"
 
-    # Add the options and profile.
-    _cmd+=("${options[@]}")
-    _cmd+=("${profile[@]}")
+
+    # TODO: Get all of these values from somewhere?
+    # In particular where to get users, loops, rampup, and throughput from?
+    # Build the complete perf command for the run.
+        _cmd=(
+            -n \
+            -j "/shared/output/logs/jmeter.log" \
+            -t "$testplanfile" \
+            -Jusersfile="$testusersfile" \
+            -Jgroup="$group" \
+            -Jdesc="$description" \
+            -Jsiteversion="$siteversion" \
+            -Jsitebranch="$sitebranch" \
+            -Jsitecommit="$sitecommit" \
+            -Jusers=5 -Jloops=1 -Jrampup=1 -Jthroughput=120 \
+            $samplerinitstr $includelogsstr
+        )
 }
 
+function perfomance_testsite_generator_command() {
+    local -n _cmd=$1 # Return by nameref.
+
+    # Build the complete perf command for the run.
+    _cmd=(
+        php admin/tool/generator/cli/maketestsite.php \
+            --size="${SITESIZE}" \
+            --fixeddataset \
+            --bypasscheck \
+            --filesizelimit="1000"
+    )
+}
+
+function performance_testplan_generator_command() {
+    local -n _cmd=$1 # Return by nameref.
+
+    case "${SITESIZE}" in
+    'XS')
+        targetcourse='testcourse_3'
+        ;;
+     'S')
+        targetcourse='testcourse_12'
+        ;;
+     'M')
+        targetcourse='testcourse_73'
+        ;;
+     'L')
+        targetcourse='testcourse_277'
+        ;;
+    'XL')
+        targetcourse='testcourse_1065'
+        ;;
+   'XXL')
+        targetcourse='testcourse_4177'
+        ;;
+       *)
+	;;
+    esac
+
+    # Build the complete perf command for the run.
+    _cmd=(
+        php admin/tool/generator/cli/maketestplan.php \
+            --size="${SITESIZE}" \
+            --shortname="${targetcourse}" \
+            --bypasscheck
+    )
+}

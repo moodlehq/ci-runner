@@ -1,0 +1,12 @@
+import java.io.*;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.jmeter.util.JMeterUtils;      // http://jakarta.apache.org/jmeter/api/org/apache/jmeter/util/JMeterUtils.html
+
+
+testStarted(){
+    String filenamepath = "output/runs/rundata.php";
+    FileWriter fstream = new FileWriter(filenamepath, true);
+    BufferedWriter out = new BufferedWriter(fstream);
+    out.write("<?php\n");
+    out.close();
+}

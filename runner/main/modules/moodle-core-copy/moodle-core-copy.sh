@@ -90,24 +90,6 @@ function moodle-core-copy_setup() {
 
     # Copy the config.php in place
     echo "== Copying configuration in place."
-    ip_address=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${WEBSERVER}")
-    echo "IP Address: ${ip_address}"
-    # Set the MOODLE_WWWROOT environment variable
-#    export MOODLE_WWWROOT="http://$ip_address"
-    # Verify that the environment variable is set
-#    echo "MOODLE_WWWROOT is set to $MOODLE_WWWROOT"
-# Set the MOODLE_WWWROOT environment variable in the running container
-
-# Set the MOODLE_WWWROOT environment variable
-export MOODLE_WWWROOT="http://$ip_address"
-
-# Verify that the environment variable is set
-echo "MOODLE_WWWROOT is set to $MOODLE_WWWROOT"
-
-# Set the MOODLE_WWWROOT environment variable in the running container
-docker exec "${WEBSERVER}" /bin/bash -c "export MOODLE_WWWROOT='http://$ip_address' && echo 'MOODLE_WWWROOT is set to $MOODLE_WWWROOT'"
-
-
     docker cp "${BASEDIR}/modules/docker-php/config.template.php" "${WEBSERVER}":/var/www/html/config.php
     docker exec "${WEBSERVER}" chown -R www-data:www-data /var/www/html/config.php
 
